@@ -229,7 +229,8 @@ func Generate(swagger *openapi3.Swagger, packageName string, opts Options) (stri
 		return "", errors.Wrap(err, "error flushing output buffer")
 	}
 
-	goCode := buf.String()
+	// remove any byte-order-marks which break Go-Code
+	goCode := strings.Replace(buf.String(), "\uFEFF", "", -1)
 
 	// The generation code produces unindented horrors. Use the Go formatter
 	// to make it all pretty.
