@@ -197,18 +197,23 @@ func DescribeSecurityDefinition(securityRequirements openapi3.SecurityRequiremen
 type OperationDefinition struct {
 	OperationId string // The operation_id description from Swagger, used to generate function names
 
-	PathParams          []ParameterDefinition // Parameters in the path, eg, /path/:param
-	HeaderParams        []ParameterDefinition // Parameters in HTTP headers
-	QueryParams         []ParameterDefinition // Parameters in the query, /path?param
-	CookieParams        []ParameterDefinition // Parameters in cookies
-	TypeDefinitions     []TypeDefinition      // These are all the types we need to define for this operation
-	SecurityDefinitions []SecurityDefinition  // These are the security providers
-	BodyRequired        bool
-	Bodies              []RequestBodyDefinition // The list of bodies for which to generate handlers.
-	Summary             string                  // Summary string from Swagger, used to generate a comment
-	Method              string                  // GET, POST, DELETE, etc.
-	Path                string                  // The Swagger path for the operation, like /resource/{id}
-	Spec                *openapi3.Operation
+	PathParams      []ParameterDefinition // Parameters in the path, eg, /path/:param
+	HeaderParams    []ParameterDefinition // Parameters in HTTP headers
+	QueryParams     []ParameterDefinition // Parameters in the query, /path?param
+	CookieParams    []ParameterDefinition // Parameters in cookies
+	TypeDefinitions []TypeDefinition      // These are all the types we need to define for this operation
+
+	// These are the operation-specific SecurityDefinitions.
+	// A non-nil slice implies an explicit override of any global SecurityDefinitions.
+	// See: "Step 2. Applying security:" from the spec: https://swagger.io/docs/specification/authentication/
+	SecurityDefinitions *[]SecurityDefinition
+
+	BodyRequired bool
+	Bodies       []RequestBodyDefinition // The list of bodies for which to generate handlers.
+	Summary      string                  // Summary string from Swagger, used to generate a comment
+	Method       string                  // GET, POST, DELETE, etc.
+	Path         string                  // The Swagger path for the operation, like /resource/{id}
+	Spec         *openapi3.Operation
 }
 
 // Returns the list of all parameters except Path parameters. Path parameters
@@ -435,8 +440,13 @@ func OperationDefinitions(swagger *openapi3.Swagger) ([]OperationDefinition, err
 				TypeDefinitions: typeDefinitions,
 			}
 
+			// check for overrides of SecurityDefinitions.
+			// "nil" means "use global definitions"
+			// otherwise override any global SecurityDefinitions"
+			// See: "Step 2. Applying security:" from the spec: https://swagger.io/docs/specification/authentication/
 			if op.Security != nil {
-				opDef.SecurityDefinitions = DescribeSecurityDefinition(*op.Security)
+				securityDefinitions := DescribeSecurityDefinition(*op.Security)
+				opDef.SecurityDefinitions = &securityDefinitions
 			}
 
 			if op.RequestBody != nil {

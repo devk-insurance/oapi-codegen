@@ -677,8 +677,10 @@ func (w *ServerInterfaceWrapper) {{.OperationId}} (ctx echo.Context) error {
 {{end}}
 {{end}}
 
+{{if .SecurityDefinitions}}
 {{range .SecurityDefinitions}}
     ctx.Set("{{.ProviderName}}.Scopes", {{toStringArray .Scopes}})
+{{end}}
 {{end}}
 
 {{if .RequiresParamObject}}
