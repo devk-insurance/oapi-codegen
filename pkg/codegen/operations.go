@@ -376,6 +376,11 @@ func FilterParameterDefinitionByType(params []ParameterDefinition, in string) []
 func OperationDefinitions(swagger *openapi3.Swagger) ([]OperationDefinition, error) {
 	var operations []OperationDefinition
 
+	// globalSecurityDefinitions contains the top-level securityDefinitions.
+	// They are the default securityPermissions which are injected into each
+	// path, except for the case where a path explicitly overrides them.
+	var globalSecurityDefinitions = DescribeSecurityDefinition(swagger.Security)
+
 	for _, requestPath := range SortedPathsKeys(swagger.Paths) {
 		pathItem := swagger.Paths[requestPath]
 		// These are parameters defined for all methods on a given path. They
@@ -441,12 +446,15 @@ func OperationDefinitions(swagger *openapi3.Swagger) ([]OperationDefinition, err
 			}
 
 			// check for overrides of SecurityDefinitions.
-			// "nil" means "use global definitions"
-			// otherwise override any global SecurityDefinitions"
-			// See: "Step 2. Applying security:" from the spec: https://swagger.io/docs/specification/authentication/
+			// See: "Step 2. Applying security:" from the spec:
+			// https://swagger.io/docs/specification/authentication/
 			if op.Security != nil {
+				// override global SecurityDefinitions
 				securityDefinitions := DescribeSecurityDefinition(*op.Security)
 				opDef.SecurityDefinitions = &securityDefinitions
+			} else {
+				// use global securityDefinitions
+				opDef.SecurityDefinitions = &globalSecurityDefinitions
 			}
 
 			if op.RequestBody != nil {
