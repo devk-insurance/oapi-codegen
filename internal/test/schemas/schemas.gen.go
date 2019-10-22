@@ -16,7 +16,9 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 )
 
 // N5StartsWithNumber defines model for 5StartsWithNumber.
@@ -45,25 +47,210 @@ type Issue9Params struct {
 // Issue9RequestBody defines body for Issue9 for application/json ContentType.
 type Issue9JSONRequestBody Issue9JSONBody
 
-// RequestEditorFn  is the function signature for the RequestEditor callback function
-type RequestEditorFn func(req *http.Request, ctx context.Context) error
+type (
 
-// Client which conforms to the OpenAPI3 specification for this service.
-type Client struct {
-	// The endpoint of the server conforming to this interface, with scheme,
-	// https://api.deepmap.com for example.
-	Server string
+	// RequestEditorFn is the function signature for the RequestEditor callback function
+	RequestEditorFn func(req *http.Request, ctx context.Context) error
 
-	// HTTP client with any customized settings, such as certificate chains.
-	Client http.Client
+	// RequestCompletionFn is the function signature for the RequestCompletion callback function
+	RequestCompletionFn func(req *http.Request, resp *http.Response)
 
-	// A callback for modifying requests which are generated before sending over
-	// the network.
-	RequestEditor RequestEditorFn
+	// InterceptorFn allows intercepting requests and can be used as an adapter
+	// to a Interceptor.
+	InterceptorFn func(req *http.Request, ctx context.Context) error
+
+	// Interceptor allows intercepting requests.
+	Interceptor interface {
+		// Intercept intercepts a request and can fail with an error.
+		Intercept(req *http.Request, ctx context.Context) error
+	}
+
+	// Client which conforms to the OpenAPI3 specification for this service.
+	Client struct {
+		// The endpoint of the server conforming to this interface, with scheme,
+		// https://api.deepmap.com for example.
+		Server string
+
+		// HTTP client with any customized settings, such as certificate chains.
+		Client *http.Client
+
+		// A callback for modifying requests which are generated before sending over
+		// the network.
+		RequestEditor RequestEditorFn
+
+		// A callback which gets called after request finished, before any
+		// deserialization steps.
+		RequestCompletion RequestCompletionFn
+
+		// List of additional interceptors, which gets called prior
+		// of the RequestEditor.
+		Interceptors []Interceptor
+
+		// userAgent to use
+		userAgent string
+
+		// timeout of single request
+		requestTimeout time.Duration
+
+		// timeout of idle http connections
+		idleTimeout time.Duration
+
+		// maxium idle connections of the underlying http-client.
+		maxIdleConns int
+	}
+
+	// Option allows setting custom parameters during construction
+	Option func(*Client) error
+)
+
+// NewClient creates a new Client.
+func NewClient(ctx context.Context, opts ...Option) (*Client, error) {
+	// create a client with sane default values
+	client := Client{
+		// must have a slash in order to resolve relative paths correctly.
+		Server:         "",
+		userAgent:      "oapi-codegen",
+		maxIdleConns:   10,
+		requestTimeout: 5 * time.Second,
+		idleTimeout:    30 * time.Second,
+	}
+	// mutate defaultClient and add all optional params
+	for _, o := range opts {
+		if err := o(&client); err != nil {
+			return nil, err
+		}
+	}
+
+	// create httpClient, if not already present
+	if client.Client == nil {
+		client.Client = client.newHTTPClient()
+	}
+
+	return &client, nil
+}
+
+// WithBaseURL overrides the baseURL.
+func WithBaseURL(baseURL string) Option {
+	return func(c *Client) error {
+		if !strings.HasSuffix(baseURL, "/") {
+			baseURL += "/"
+		}
+		newBaseURL, err := url.Parse(baseURL)
+		if err != nil {
+			return err
+		}
+		c.Server = newBaseURL.String()
+		return nil
+	}
+}
+
+// WithUserAgent allows setting the userAgent
+func WithUserAgent(userAgent string) Option {
+	return func(c *Client) error {
+		c.userAgent = userAgent
+		return nil
+	}
+}
+
+// WithIdleTimeout overrides the timeout of idle connections.
+func WithIdleTimeout(timeout time.Duration) Option {
+	return func(c *Client) error {
+		c.idleTimeout = timeout
+		return nil
+	}
+}
+
+// WithRequestTimeout overrides the timeout of individual requests.
+func WithRequestTimeout(timeout time.Duration) Option {
+	return func(c *Client) error {
+		c.requestTimeout = timeout
+		return nil
+	}
+}
+
+// WithMaxIdleConnections overrides the amount of idle connections of the
+// underlying http-client.
+func WithMaxIdleConnections(maxIdleConns uint) Option {
+	return func(c *Client) error {
+		c.maxIdleConns = int(maxIdleConns)
+		return nil
+	}
+}
+
+// WithHTTPClient allows overriding the default httpClient, which is
+// automatically created. This is useful for tests.
+func WithHTTPClient(httpClient *http.Client) Option {
+	return func(c *Client) error {
+		c.Client = httpClient
+		return nil
+	}
+}
+
+// WithRequestEditorFn allows setting up a callback function, which will be
+// called right before sending the request. This can be used to mutate the request.
+func WithRequestEditorFn(fn RequestEditorFn) Option {
+	return func(c *Client) error {
+		c.RequestEditor = fn
+		return nil
+	}
+}
+
+// WithRequestEditorFn allows setting up a callback function, which will be
+// called right before sending the request. This can be used to mutate the request.
+func WithRequestCompletionFn(fn RequestCompletionFn) Option {
+	return func(c *Client) error {
+		c.RequestCompletion = fn
+		return nil
+	}
+}
+
+// WithInterceptors allows adding 0..N interceptors, which get called in serial
+// order prior of calling the RequestEditor before finally making the request.
+// Use this function to attach authentication mechanisms.
+func WithInterceptors(interceptors ...Interceptor) Option {
+	return func(c *Client) error {
+		c.Interceptors = interceptors
+		return nil
+	}
+}
+
+// newHTTPClient creates a httpClient for the current connection options.
+func (c *Client) newHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: c.requestTimeout,
+		Transport: &http.Transport{
+			MaxIdleConns:    c.maxIdleConns,
+			IdleConnTimeout: c.idleTimeout,
+		},
+	}
+}
+
+// Intercept intercepts the request, applies all registered Interceptors
+// which are part of the client.
+// If an Interceptor fails, the Interceptor chain will return early.
+func (c *Client) Intercept(req *http.Request, ctx context.Context) error {
+	for _, interceptor := range c.Interceptors {
+		if err := interceptor.Intercept(req, ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// InterceptorFn is an adapter to allow the use of
+// ordinary functions as Interceptors.
+func (f InterceptorFn) Intercept(req *http.Request, ctx context.Context) error {
+	return f(req, ctx)
 }
 
 // The interface specification for the client above.
 type ClientInterface interface {
+
+	// Intercept intercepts the request, applies all registered Interceptors
+	// which are part of the client.
+	// If an Interceptor fails, the Interceptor chain will return early.
+	Intercept(req *http.Request, ctx context.Context) error
+
 	// Issue30 request
 	Issue30(ctx context.Context, pFallthrough string) (*http.Response, error)
 
@@ -82,6 +269,9 @@ func (c *Client) Issue30(ctx context.Context, pFallthrough string) (*http.Respon
 		return nil, err
 	}
 	req = req.WithContext(ctx)
+	if err := c.Intercept(req, ctx); err != nil {
+		return nil, err
+	}
 	if c.RequestEditor != nil {
 		err = c.RequestEditor(req, ctx)
 		if err != nil {
@@ -97,6 +287,9 @@ func (c *Client) Issue41(ctx context.Context, n1param N5StartsWithNumber) (*http
 		return nil, err
 	}
 	req = req.WithContext(ctx)
+	if err := c.Intercept(req, ctx); err != nil {
+		return nil, err
+	}
 	if c.RequestEditor != nil {
 		err = c.RequestEditor(req, ctx)
 		if err != nil {
@@ -112,6 +305,9 @@ func (c *Client) Issue9WithBody(ctx context.Context, params *Issue9Params, conte
 		return nil, err
 	}
 	req = req.WithContext(ctx)
+	if err := c.Intercept(req, ctx); err != nil {
+		return nil, err
+	}
 	if c.RequestEditor != nil {
 		err = c.RequestEditor(req, ctx)
 		if err != nil {
@@ -127,6 +323,9 @@ func (c *Client) Issue9(ctx context.Context, params *Issue9Params, body Issue9JS
 		return nil, err
 	}
 	req = req.WithContext(ctx)
+	if err := c.Intercept(req, ctx); err != nil {
+		return nil, err
+	}
 	if c.RequestEditor != nil {
 		err = c.RequestEditor(req, ctx)
 		if err != nil {
@@ -228,7 +427,7 @@ type ClientWithResponses struct {
 func NewClientWithResponses(server string) *ClientWithResponses {
 	return &ClientWithResponses{
 		ClientInterface: &Client{
-			Client: http.Client{},
+			Client: &http.Client{},
 			Server: server,
 		},
 	}
@@ -238,7 +437,7 @@ func NewClientWithResponses(server string) *ClientWithResponses {
 func NewClientWithResponsesAndRequestEditorFunc(server string, reqEditorFn RequestEditorFn) *ClientWithResponses {
 	return &ClientWithResponses{
 		ClientInterface: &Client{
-			Client:        http.Client{},
+			Client:        &http.Client{},
 			Server:        server,
 			RequestEditor: reqEditorFn,
 		},
